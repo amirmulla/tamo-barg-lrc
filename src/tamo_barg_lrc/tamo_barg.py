@@ -2,17 +2,21 @@
 
 from typing import Any, Literal
 
-from sage.categories.cartesian_product import cartesian_product
-from sage.coding.decoder import Decoder, DecodingError
-from sage.coding.encoder import Encoder
-from sage.coding.grs_code import GeneralizedReedSolomonCode
-from sage.coding.linear_code import AbstractLinearCode
-from sage.matrix.constructor import matrix
-from sage.misc.cachefunc import cached_method
-from sage.modules.free_module import VectorSpace
-from sage.rings.finite_rings.finite_field_constructor import GF
-from sage.rings.polynomial.polynomial_ring_constructor import PolynomialRing
-
+from tamo_barg_lrc._ff import (
+    GF,
+    PolynomialRing,
+    RSCodec,
+    VectorSpace,
+    matrix,
+)
+from tamo_barg_lrc.coding_base import (
+    AbstractLinearCode,
+    Decoder,
+    DecodingError,
+    Encoder,
+    cached_method,
+    cartesian_product,
+)
 from tamo_barg_lrc.polynomials import (
     build_algebra_basis,
     build_encoding_basis,
@@ -48,11 +52,8 @@ def _coerce_int(value: Any, name: str) -> int:
 
 
 def _make_poly_ring(base_field: Any) -> Any:
-    """Construct ``base_field['x']`` preferring the generic implementation."""
-    try:
-        return PolynomialRing(base_field, "x", implementation="generic")
-    except (TypeError, ValueError):
-        return PolynomialRing(base_field, "x")
+    """Construct univariate polynomial ring ``base_field['x']``."""
+    return PolynomialRing(base_field, "x")
 
 
 def _build_coset_alignments(
@@ -80,7 +81,7 @@ def _build_coset_alignments(
             for pos, elem in enumerate(coset):
                 perm[h_index[elem - beta]] = pos
         else:
-            inv_beta = ~beta
+            inv_beta = 1 / beta
             for pos, elem in enumerate(coset):
                 perm[h_index[elem * inv_beta]] = pos
 
@@ -116,7 +117,7 @@ def _build_canonical_rs_pcm_rows(
             if j_idx != l_idx:
                 prod_diff *= a_l - eval_points[j_idx]
         inv_v.append(prod_diff)
-        v_row.append(~prod_diff)
+        v_row.append(one / prod_diff)
 
     rows: list[list[Any]] = [v_row]
     for _ in range(1, num_checks):
@@ -163,7 +164,7 @@ def _solve_erasure_system(
         a01 = row0[e1]
         a10 = row1[e0]
         a11 = row1[e1]
-        inv_det = ~(a00 * a11 - a01 * a10)
+        inv_det = 1 / (a00 * a11 - a01 * a10)
         aligned[e0] = (s0 * a11 - a01 * s1) * inv_det
         aligned[e1] = (a00 * s1 - s0 * a10) * inv_det
         return
@@ -187,7 +188,7 @@ def _solve_erasure_system(
         if piv != col:
             aug[col], aug[piv] = aug[piv], aug[col]
         piv_row = aug[col]
-        inv_p = ~piv_row[col]
+        inv_p = 1 / piv_row[col]
         for j in range(col, num_erased + 1):
             piv_row[j] *= inv_p
         for r_idx in range(num_erased):
@@ -365,11 +366,15 @@ class TamoBargCode(AbstractLinearCode):
         return self._cached_hash
 
     def _repr_(self) -> str:
-        """Return SageMath string representation of the code."""
+        """Return string representation of the code."""
         return (
             f"[{self.length()}, {self.dimension()}, {self.locality()}] "
             f"Tamo-Barg Code over GF({self.base_field().cardinality()})"
         )
+
+    def dimension(self) -> int:
+        """Return the code dimension ``k``."""
+        return self._dimension
 
     def partition(self) -> tuple[list[list[Any]], int]:
         """Return ``(coset_partition, partition_size)``."""
@@ -457,7 +462,7 @@ class TamoBargVectorEncoder(Encoder):
         return hash((type(self), self.code()))
 
     def _repr_(self) -> str:
-        """Return SageMath string representation of the encoder."""
+        """Return string representation of the encoder."""
         return f"Vector Encoder for {self.code()}"
 
     def enc_basis(self) -> list[Any]:
@@ -542,18 +547,12 @@ class TamoBargVectorEncoder(Encoder):
         return g
 
     def encode(self, word: Any) -> Any:
-        """Encode a message vector into a codeword using dense matrix multiplication.
-
-        Uses a 1-row matrix product ``(matrix(F, 1, k, list(word)) * G).row(0)``
-        so extension-field matrices dispatch to M4RIE instead of Sage's generic
-        row-unpacking ``Matrix._vector_times_matrix_`` fallback.
-        """
+        """Encode a message vector into a codeword using dense vector-matrix multiplication."""
         message_space = self.message_space()
         if word not in message_space:
             raise ValueError(f"The value to encode must be in {message_space}")
-        code = self.code()
         g = self.generator_matrix()
-        return (matrix(code.base_field(), 1, code.dimension(), list(word)) * g).row(0)
+        return word * g
 
 
 class TamoBargErasureDecoder(Decoder):
@@ -589,7 +588,7 @@ class TamoBargErasureDecoder(Decoder):
         return hash((type(self), self.code()))
 
     def _repr_(self) -> str:
-        """Return SageMath string representation of the erasure decoder."""
+        """Return string representation of the erasure decoder."""
         return f"Erasure Decoder for {self.code()}"
 
     def decode_to_code(self, word_and_erasure_vector: Any) -> Any:
@@ -616,7 +615,7 @@ class TamoBargErasureDecoder(Decoder):
                 f"got {len(word)} and {len(erasure_vector)}"
             )
 
-        if getattr(word, "base_ring", lambda: None)() is base_field:
+        if getattr(word, "base_ring", lambda: None)() == base_field:
             word_list = list(word)
         else:
             word_list = [base_field(x) for x in word]
@@ -653,10 +652,10 @@ class TamoBargErasureDecoder(Decoder):
 
 
 class TamoBargErrorDecoder(Decoder):
-    """Local GRS error decoder for :class:`TamoBargCode`."""
+    """Local Reed-Solomon error decoder for :class:`TamoBargCode`."""
 
     def __init__(self, code: TamoBargCode) -> None:
-        """Initialize the local error decoder with a shared canonical GRS code, PCM, and decoder.
+        """Initialize the local error decoder with a shared canonical RS codec and PCM.
 
         Args:
             code: Associated :class:`TamoBargCode` instance.
@@ -678,25 +677,15 @@ class TamoBargErrorDecoder(Decoder):
             sub_group, sub_group_type, partition
         )
 
-        # Pick a canonical coset avoiding 0 when possible so KeyEquationSyndrome is eligible.
+        # Pick a canonical coset avoiding 0 when possible for uniform affine alignment.
         if sub_group_type == "add" and partition_size >= 2:
             beta_ref = partition[1][0]
             canonical_pts = [beta_ref + h for h in sub_group]
         else:
             canonical_pts = list(sub_group)
 
-        self._local_code = GeneralizedReedSolomonCode(
-            evaluation_points=canonical_pts,
-            dimension=code.locality(),
-        )
-        self._local_pcm = self._local_code.parity_check_matrix()
-        if base_field.zero() not in canonical_pts:
-            try:
-                self._local_decoder = self._local_code.decoder("KeyEquationSyndrome")
-            except (KeyError, ValueError):
-                self._local_decoder = self._local_code.decoder("BerlekampWelch")
-        else:
-            self._local_decoder = self._local_code.decoder("BerlekampWelch")
+        self._local_codec = RSCodec(base_field, canonical_pts, code.locality())
+        self._local_pcm = self._local_codec.parity_check_matrix()
 
     def __eq__(self, other: object) -> bool:
         """Check equality between two :class:`TamoBargErrorDecoder` instances."""
@@ -707,11 +696,11 @@ class TamoBargErrorDecoder(Decoder):
         return hash((type(self), self.code()))
 
     def _repr_(self) -> str:
-        """Return SageMath string representation of the error decoder."""
+        """Return string representation of the error decoder."""
         return f"Error Decoder for {self.code()}"
 
     def decode_to_code(self, r: Any) -> Any:
-        """Locally decode each coset via batched syndrome check + shared GRS decoder.
+        """Locally decode each coset via batched syndrome check + shared RS codec.
 
         Args:
             r: Received vector in ``GF(q)^n``.
@@ -728,7 +717,7 @@ class TamoBargErrorDecoder(Decoder):
         if len(r) != n:
             raise ValueError(f"Received word must have length {n}, got {len(r)}")
 
-        if getattr(r, "base_ring", lambda: None)() is base_field:
+        if getattr(r, "base_ring", lambda: None)() == base_field:
             r_list = list(r)
         else:
             r_list = [base_field(x) for x in r]
@@ -753,15 +742,14 @@ class TamoBargErrorDecoder(Decoder):
             )
 
         syndromes = self._local_pcm * r_mat
-        num_checks = self._num_checks
         local_space = self._local_space
-        local_decoder = self._local_decoder
+        local_codec = self._local_codec
         can_correct = self._max_correctable_errors > 0
         corrected: list[Any] = []
 
         for c in range(s):
             offset = c * m
-            if all(syndromes[row, c].is_zero() for row in range(num_checks)) or not can_correct:
+            if not can_correct or syndromes.column(c).is_zero():
                 corrected.extend(r_list[offset : offset + m])
                 continue
 
@@ -772,7 +760,7 @@ class TamoBargErrorDecoder(Decoder):
                 local_vec = local_space([r_list[offset + idx] for idx in perm])
 
             try:
-                local_corr = local_decoder.decode_to_code(local_vec)
+                local_corr = local_codec.decode_errors(local_vec)
                 if all_identity:
                     corrected.extend(local_corr)
                 else:

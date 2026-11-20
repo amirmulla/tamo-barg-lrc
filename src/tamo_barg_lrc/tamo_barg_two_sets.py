@@ -8,25 +8,29 @@ from typing import Any, Literal
 
 import networkx as nx
 import numpy as np
-from sage.categories.cartesian_product import cartesian_product
-from sage.coding.decoder import Decoder, DecodingError
-from sage.coding.encoder import Encoder
-from sage.coding.grs_code import GeneralizedReedSolomonCode
-from sage.coding.linear_code import AbstractLinearCode
-from sage.matrix.constructor import matrix
-from sage.matrix.matrix_space import MatrixSpace
-from sage.misc.cachefunc import cached_method
-from sage.modules.free_module import VectorSpace
-from sage.rings.finite_rings.finite_field_constructor import GF
-from sage.rings.polynomial.polynomial_ring_constructor import PolynomialRing
 
+from tamo_barg_lrc._ff import (
+    GF,
+    MatrixSpace,
+    PolynomialRing,
+    RSCodec,
+    VectorSpace,
+    matrix,
+)
+from tamo_barg_lrc.coding_base import (
+    AbstractLinearCode,
+    Decoder,
+    DecodingError,
+    Encoder,
+    cached_method,
+    cartesian_product,
+)
 from tamo_barg_lrc.expander import create_bipartite_coset_graph
 from tamo_barg_lrc.polynomials import (
     build_algebra_basis,
     build_encoding_basis,
     build_good_polynomial,
     evaluate_message_polynomial,
-    interpolate_erasures,
     intersect_encoding_bases,
 )
 from tamo_barg_lrc.subgroups import (
@@ -54,7 +58,7 @@ _POPCOUNT_LUT8 = np.array([bin(i).count("1") for i in range(256)], dtype=np.uint
 
 
 def _is_int_like(value: Any) -> bool:
-    """Return True if ``value`` is an integer (Python ``int`` or Sage ``Integer``), not ``bool``."""
+    """Return True if ``value`` is an integer (not ``bool``)."""
     return isinstance(value, numbers.Integral) and not isinstance(value, bool)
 
 
@@ -68,13 +72,6 @@ def _int_log_base(size: int, base: int) -> int:
         rem //= base
         exp += 1
     return exp
-
-
-def _safe_parity_check_matrix(grs_code: GeneralizedReedSolomonCode) -> Any:
-    """Return the parity-check matrix of ``grs_code``, handling trivial full-rate codes safely."""
-    if grs_code.dimension() == grs_code.length():
-        return matrix(grs_code.base_field(), 0, grs_code.length())
-    return grs_code.parity_check_matrix()
 
 
 @lru_cache(maxsize=16)
@@ -109,7 +106,9 @@ def _gf2m_min_distance(gen_mat: Any, field: Any, k: int, n: int, stop_bound: int
     q = int(field.cardinality())
     exp_tbl, log_tbl, _ = _gf2m_tables(field)
     dtype = np.uint8 if q <= 256 else np.uint16
-    if q == 2:
+    if hasattr(gen_mat, "_arr"):
+        g_int = gen_mat._arr.astype(dtype, copy=False)
+    elif q == 2:
         g_int = np.array([[int(gen_mat[i, j]) for j in range(n)] for i in range(k)], dtype=dtype)
     else:
         g_int = np.array(
@@ -290,16 +289,14 @@ def _gf2m_min_distance(gen_mat: Any, field: Any, k: int, n: int, stop_bound: int
 
 def _partition_is_syndrome_clean(
     part_idx: int,
-    work: Any,
-    evalpts_idx: list[list[list[int]]],
-    local_parity_checks: list[list[Any]],
-    local_vector_space: Any,
+    work_arr: np.ndarray,
+    evalpts_idx_arr: list[list[np.ndarray]],
+    local_codes: list[list[RSCodec]],
 ) -> bool:
     """Return True if every coset in partition ``part_idx`` has zero local syndrome."""
-    pcms = local_parity_checks[part_idx]
-    for j, idxs in enumerate(evalpts_idx[part_idx]):
-        local_vec = local_vector_space([work[idx] for idx in idxs])
-        if not (pcms[j] * local_vec).is_zero():
+    codes = local_codes[part_idx]
+    for j, idxs in enumerate(evalpts_idx_arr[part_idx]):
+        if not codes[j].has_zero_syndrome(work_arr[idxs]):
             return False
     return True
 
@@ -530,6 +527,10 @@ class TamoBargCodeTwoSets(AbstractLinearCode):
             self._dimension = max_dim
         elif dim_int < 1 or dim_int > max_dim:
             raise ValueError(f"Code dimension ({dim_int}) must satisfy 1 <= dimension <= {max_dim}")
+
+    def dimension(self) -> int:
+        """Return the message dimension ``k`` of the code."""
+        return self._dimension  # type: ignore[return-value]
 
     def encoder(self, encoder_name: str | None = None, *args: Any, **kwargs: Any) -> Encoder:
         """Return a cached encoder, unifying ``encoder()`` and ``encoder('VectorEncoder')``."""
@@ -766,11 +767,11 @@ class TamoBargTwoSetsVectorEncoder(Encoder):
         return self._max_dimension
 
     def encode(self, word: Any) -> Any:
-        """Encode ``word`` into a codeword via a 1-row matrix product with ``G``."""
+        """Encode ``word`` into a codeword via a vector-matrix product with ``G``."""
         msg_space = self.message_space()
         if word not in msg_space:
             raise ValueError(f"The value to encode must be in {msg_space}")
-        return (self._row_matrix_space(list(word)) * self.generator_matrix()).row(0)
+        return word * self.generator_matrix()
 
     @cached_method
     def generator_matrix(self) -> Any:
@@ -781,56 +782,20 @@ class TamoBargTwoSetsVectorEncoder(Encoder):
         n = int(code.length())
         alphas = code.evaluation_points()
 
-        if int(field.characteristic()) == 2 and int(field.cardinality()) <= 65536:
-            q = int(field.cardinality())
-            exp_tbl, log_tbl, int_to_elem = _gf2m_tables(field)
-            dtype = np.uint8 if q <= 256 else np.uint16
-            if q == 2:
-                alpha_int = np.array([int(a) for a in alphas], dtype=dtype)
-            else:
-                alpha_int = np.array([int(a.to_integer()) for a in alphas], dtype=dtype)
-            nz_alpha = alpha_int != 0
-            alpha_logs = log_tbl[alpha_int[nz_alpha]].astype(np.int64)
-            q_minus_1 = q - 1
-
-            rows: list[list[Any]] = []
-            for poly in self._comb_enc_basis:
-                coeffs = poly.list()
-                if not coeffs:
-                    rows.append([field.zero()] * n)
-                    continue
-                c0 = int(coeffs[0]) if q == 2 else int(coeffs[0].to_integer())
-                row_int = np.full(n, c0, dtype=dtype)
-                nz_degs: list[int] = []
-                nz_clogs: list[int] = []
-                for deg in range(1, len(coeffs)):
-                    c_val = int(coeffs[deg]) if q == 2 else int(coeffs[deg].to_integer())
-                    if c_val != 0:
-                        nz_degs.append(deg)
-                        nz_clogs.append(int(log_tbl[c_val]))
-                if nz_degs and np.any(nz_alpha):
-                    d_arr = np.array(nz_degs, dtype=np.int64)
-                    c_logs = np.array(nz_clogs, dtype=np.int64)
-                    exps = c_logs[:, None] + (d_arr[:, None] * alpha_logs[None, :]) % q_minus_1
-                    row_int[nz_alpha] ^= np.bitwise_xor.reduce(exp_tbl[exps], axis=0)
-                rows.append([int_to_elem[v] for v in row_int.tolist()])
-            gen_mat = matrix(field, k, n, rows)
-        else:
-            gen_mat = matrix(
-                field,
-                k,
-                n,
-                [[poly(alpha) for alpha in alphas] for poly in self._comb_enc_basis],
-            )
+        alphas_arr = field.coerce_to_arr(alphas)
+        rows_arr = np.zeros((k, n), dtype=field._dtype)
+        for i, poly in enumerate(self._comb_enc_basis):
+            rows_arr[i] = poly.eval_points_arr(alphas_arr)
+        gen_mat = matrix(field, k, n, rows_arr)
         gen_mat.set_immutable()
         return gen_mat
 
 
 class TamoBargIterativeDecoder(Decoder):
-    """Iterative hard-decision local GRS decoder across both coset partitions."""
+    """Iterative hard-decision local RS decoder across both coset partitions."""
 
     def __init__(self, code: TamoBargCodeTwoSets, max_num_of_itr: int = 10) -> None:
-        """Precompute local GRS codes, Gao decoders, and parity-check matrices.
+        """Precompute local RS codecs and parity-check matrices.
 
         Args:
             code: Associated ``TamoBargCodeTwoSets`` instance.
@@ -846,49 +811,45 @@ class TamoBargIterativeDecoder(Decoder):
         self._ambient_space = code.ambient_space()
         self._partitions, _ = code.partition()
         self._evalpts_idx = code.evaluation_points_idx()
-        self._local_vector_spaces = [
-            VectorSpace(self._F, len(self._evalpts_idx[i][0])) for i in (0, 1)
+        self._evalpts_idx_arr: list[list[np.ndarray]] = [
+            [np.array(idxs, dtype=np.intp) for idxs in part_idxs] for part_idxs in self._evalpts_idx
         ]
 
-        self._partitions_local_codes: list[list[GeneralizedReedSolomonCode]] = []
-        self._partitions_local_decoders: list[list[Any]] = []
+        self._partitions_local_codes: list[list[RSCodec]] = []
         self._local_parity_checks: list[list[Any]] = []
 
         localities = code.locality()
         for i, partition in enumerate(self._partitions):
-            code_tmp: list[GeneralizedReedSolomonCode] = []
-            decoder_tmp: list[Any] = []
+            code_tmp: list[RSCodec] = []
             pcm_tmp: list[Any] = []
             for coset in partition:
-                local_grs = GeneralizedReedSolomonCode(coset, localities[i])
-                code_tmp.append(local_grs)
-                decoder_tmp.append(local_grs.decoder("Gao"))
-                pcm_tmp.append(_safe_parity_check_matrix(local_grs))
+                local_rs = RSCodec(self._F, coset, localities[i])
+                code_tmp.append(local_rs)
+                pcm_tmp.append(local_rs.parity_check_matrix())
             self._partitions_local_codes.append(code_tmp)
-            self._partitions_local_decoders.append(decoder_tmp)
             self._local_parity_checks.append(pcm_tmp)
 
     def _repr_(self) -> str:
         """Return string representation of the iterative decoder."""
         return f"Iterative Decoder for {self.code()}"
 
-    def _partition_is_syndrome_clean(self, part_idx: int, work: Any) -> bool:
+    def _partition_is_syndrome_clean(self, part_idx: int, work_arr: np.ndarray) -> bool:
         """Return True if every coset in partition ``part_idx`` has zero local syndrome."""
         return _partition_is_syndrome_clean(
             part_idx,
-            work,
-            self._evalpts_idx,
-            self._local_parity_checks,
-            self._local_vector_spaces[part_idx],
+            work_arr,
+            self._evalpts_idx_arr,
+            self._partitions_local_codes,
         )
 
     def _decode_with_status(self, r: Any) -> tuple[Any, int, bool]:
         """Iteratively decode ``r`` and return ``(work, num_itr, converged)``."""
         work = copy(self._ambient_space(r))
+        work_arr = work._arr
         num_itr = 0
         converged = False
-        prev_state_1: tuple[Any, ...] | None = tuple(work)
-        prev_state_2: tuple[Any, ...] | None = None
+        prev_state_1: bytes | None = work_arr.tobytes()
+        prev_state_2: bytes | None = None
 
         while num_itr < self._max_num_of_itr:
             uncorrectable_err = [False, False]
@@ -896,35 +857,32 @@ class TamoBargIterativeDecoder(Decoder):
             changed_in_p1 = False
 
             for i in (0, 1):
-                local_vs = self._local_vector_spaces[i]
-                pcms = self._local_parity_checks[i]
-                decoders = self._partitions_local_decoders[i]
-                for j, idxs in enumerate(self._evalpts_idx[i]):
-                    local_vec = local_vs([work[idx] for idx in idxs])
-                    if (pcms[j] * local_vec).is_zero():
+                local_codes = self._partitions_local_codes[i]
+                for j, idxs in enumerate(self._evalpts_idx_arr[i]):
+                    local_arr = work_arr[idxs]
+                    if local_codes[j].has_zero_syndrome(local_arr):
                         continue
                     try:
-                        corr_c = decoders[j].decode_to_code(local_vec)
+                        corr_arr = local_codes[j].decode_errors(local_arr)
                     except (DecodingError, ValueError):
                         uncorrectable_err[i] = True
                         continue
 
-                    if corr_c != local_vec:
+                    if not np.array_equal(corr_arr, local_arr):
                         changed_in_itr = True
                         if i == 1:
                             changed_in_p1 = True
-                        for pos, idx in enumerate(idxs):
-                            work[idx] = corr_c[pos]
+                        work_arr[idxs] = corr_arr
 
             num_itr += 1
             if not uncorrectable_err[0] and not uncorrectable_err[1]:
-                if not changed_in_p1 or self._partition_is_syndrome_clean(0, work):
+                if not changed_in_p1 or self._partition_is_syndrome_clean(0, work_arr):
                     converged = True
                     break
             elif not changed_in_itr:
                 break
 
-            curr_state = tuple(work)
+            curr_state = work_arr.tobytes()
             if curr_state == prev_state_2:
                 break
             prev_state_2 = prev_state_1
@@ -951,7 +909,7 @@ class TamoBargIterativeDecoder(Decoder):
 
 
 class TamoBargIterativeEEDecoder(Decoder):
-    """Iterative erasure-and-error local GRS decoder across both coset partitions."""
+    """Iterative erasure-and-error local RS decoder across both coset partitions."""
 
     def __init__(
         self,
@@ -959,7 +917,7 @@ class TamoBargIterativeEEDecoder(Decoder):
         max_num_of_itr: int = 10,
         erasure_start_itr: int | None = None,
     ) -> None:
-        """Precompute local GRS ErrorErasure decoders, syndromes, and polynomial ring.
+        """Precompute local RS error-and-erasure codecs and parity-check matrices.
 
         Args:
             code: Associated ``TamoBargCodeTwoSets`` instance.
@@ -987,122 +945,94 @@ class TamoBargIterativeEEDecoder(Decoder):
         self._F = code.base_field()
         self._ambient_space = code.ambient_space()
         self._era_ambient_space = VectorSpace(GF(2), int(code.length()))
-        self._poly_ring = PolynomialRing(self._F, "x", implementation="generic")
         self._partitions, _ = code.partition()
         self._evalpts_idx = code.evaluation_points_idx()
-        self._local_min_distances = code.local_minimum_distance()
-        self._local_vector_spaces = [
-            VectorSpace(self._F, len(self._evalpts_idx[i][0])) for i in (0, 1)
+        self._evalpts_idx_arr: list[list[np.ndarray]] = [
+            [np.array(idxs, dtype=np.intp) for idxs in part_idxs] for part_idxs in self._evalpts_idx
         ]
-        self._local_era_spaces = [VectorSpace(GF(2), len(self._evalpts_idx[i][0])) for i in (0, 1)]
+        self._local_min_distances = code.local_minimum_distance()
 
-        self._partitions_local_codes: list[list[GeneralizedReedSolomonCode]] = []
-        self._partitions_local_decoders: list[list[Any]] = []
-        self._partitions_local_gao_decoders: list[list[Any]] = []
+        self._partitions_local_codes: list[list[RSCodec]] = []
         self._local_parity_checks: list[list[Any]] = []
 
         localities = code.locality()
         for i, partition in enumerate(self._partitions):
-            code_tmp: list[GeneralizedReedSolomonCode] = []
-            decoder_tmp: list[Any] = []
-            gao_tmp: list[Any] = []
+            code_tmp: list[RSCodec] = []
             pcm_tmp: list[Any] = []
             for coset in partition:
-                local_grs = GeneralizedReedSolomonCode(coset, localities[i])
-                code_tmp.append(local_grs)
-                decoder_tmp.append(local_grs.decoder("ErrorErasure"))
-                gao_tmp.append(local_grs.decoder("Gao"))
-                pcm_tmp.append(_safe_parity_check_matrix(local_grs))
+                local_rs = RSCodec(self._F, coset, localities[i])
+                code_tmp.append(local_rs)
+                pcm_tmp.append(local_rs.parity_check_matrix())
             self._partitions_local_codes.append(code_tmp)
-            self._partitions_local_decoders.append(decoder_tmp)
-            self._partitions_local_gao_decoders.append(gao_tmp)
             self._local_parity_checks.append(pcm_tmp)
 
     def _repr_(self) -> str:
         """Return string representation of the iterative erasure-and-error decoder."""
         return f"Iterative Decoder Error-and-Erasure for {self.code()}"
 
-    def _partition_is_syndrome_clean(self, part_idx: int, work: Any) -> bool:
+    def _partition_is_syndrome_clean(self, part_idx: int, work_arr: np.ndarray) -> bool:
         """Return True if every coset in partition ``part_idx`` has zero local syndrome."""
         return _partition_is_syndrome_clean(
             part_idx,
-            work,
-            self._evalpts_idx,
-            self._local_parity_checks,
-            self._local_vector_spaces[part_idx],
+            work_arr,
+            self._evalpts_idx_arr,
+            self._partitions_local_codes,
         )
 
     def _decode_with_status(self, r: Any) -> tuple[tuple[Any, Any], int, bool]:
         """Iteratively decode ``r`` and return ``((work, era_vec), num_itr, converged)``."""
         work = copy(self._ambient_space(r))
-        erasure_flags = [0] * len(work)
+        work_arr = work._arr
+        erasure_flags = np.zeros(len(work), dtype=np.uint8)
         num_itr = 0
         converged = False
         erasures_activated = False
 
         while num_itr < self._max_num_of_itr:
-            prev_work = list(work)
-            prev_erasures = list(erasure_flags)
+            prev_work = work_arr.tobytes()
+            prev_erasures = erasure_flags.tobytes()
             uncorrectable_err = [False, False]
             changed_in_p1 = False
             due_status: list[list[bool]] = []
 
             for i in (0, 1):
                 d_local = self._local_min_distances[i]
-                local_vs = self._local_vector_spaces[i]
-                local_era_vs = self._local_era_spaces[i]
-                pcms = self._local_parity_checks[i]
-                ee_decoders = self._partitions_local_decoders[i]
-                gao_decoders = self._partitions_local_gao_decoders[i]
+                local_codes = self._partitions_local_codes[i]
                 due_tmp: list[bool] = []
-                for j, coset in enumerate(self._partitions[i]):
-                    idxs = self._evalpts_idx[i][j]
-                    r_list = [work[idx] for idx in idxs]
-                    era_list = [erasure_flags[idx] for idx in idxs]
-                    era_wt = sum(era_list)
+                for j, idxs in enumerate(self._evalpts_idx_arr[i]):
+                    local_arr = work_arr[idxs]
+                    era_sub = erasure_flags[idxs]
+                    era_wt = int(era_sub.sum())
 
                     if era_wt == 0:
-                        local_vec = local_vs(r_list)
-                        if (pcms[j] * local_vec).is_zero():
+                        if local_codes[j].has_zero_syndrome(local_arr):
                             due_tmp.append(False)
                             continue
                         try:
-                            corr_c = gao_decoders[j].decode_to_code(local_vec)
+                            corr_arr = local_codes[j].decode_errors(local_arr)
                         except (DecodingError, ValueError):
                             due_tmp.append(True)
                             uncorrectable_err[i] = True
                         else:
-                            if corr_c != local_vec:
+                            if not np.array_equal(corr_arr, local_arr):
                                 if i == 1:
                                     changed_in_p1 = True
-                                for pos, idx in enumerate(idxs):
-                                    work[idx] = corr_c[pos]
+                                work_arr[idxs] = corr_arr
                             due_tmp.append(False)
                     elif era_wt >= d_local:
                         due_tmp.append(True)
                         uncorrectable_err[i] = True
-                    elif era_wt == d_local - 1:
-                        corr_list = interpolate_erasures(self._poly_ring, coset, r_list, era_list)
-                        for pos, idx in enumerate(idxs):
-                            if i == 1 and work[idx] != corr_list[pos]:
-                                changed_in_p1 = True
-                            work[idx] = corr_list[pos]
-                        due_tmp.append(False)
                     else:
-                        local_vec = local_vs(r_list)
                         try:
-                            corr_c = ee_decoders[j].decode_to_code(
-                                (local_vec, local_era_vs(era_list))
-                            )
+                            corr_arr = local_codes[j].decode_errors_erasures(local_arr, era_sub)
                         except (DecodingError, ValueError):
                             due_tmp.append(True)
                             uncorrectable_err[i] = True
                         else:
-                            if corr_c != local_vec:
+                            if not np.array_equal(corr_arr, local_arr):
                                 if i == 1:
                                     changed_in_p1 = True
-                                for pos, idx in enumerate(idxs):
-                                    work[idx] = corr_c[pos]
+                                work_arr[idxs] = corr_arr
                             due_tmp.append(False)
 
                 due_status.append(due_tmp)
@@ -1112,30 +1042,26 @@ class TamoBargIterativeEEDecoder(Decoder):
             if (
                 not uncorrectable_err[0]
                 and not uncorrectable_err[1]
-                and (not changed_in_p1 or self._partition_is_syndrome_clean(0, work))
+                and (not changed_in_p1 or self._partition_is_syndrome_clean(0, work_arr))
             ):
                 for s in (0, 1):
-                    for t, idxs in enumerate(self._evalpts_idx[s]):
+                    for t, idxs in enumerate(self._evalpts_idx_arr[s]):
                         if not due_status[s][t]:
-                            for idx in idxs:
-                                erasure_flags[idx] = 0
+                            erasure_flags[idxs] = 0
                 converged = True
                 break
 
-            work_stalled = list(work) == prev_work
+            work_stalled = work_arr.tobytes() == prev_work
             trigger_erasures = num_itr >= self._erasure_start_itr or (
                 self._dynamic_erasure_start and (erasures_activated or work_stalled)
             )
             if trigger_erasures:
                 erasures_activated = True
-                for t, idxs in enumerate(self._evalpts_idx[0]):
-                    mark = 1 if due_status[0][t] else 0
-                    for idx in idxs:
-                        erasure_flags[idx] = mark
-                for t, idxs in enumerate(self._evalpts_idx[1]):
+                for t, idxs in enumerate(self._evalpts_idx_arr[0]):
+                    erasure_flags[idxs] = 1 if due_status[0][t] else 0
+                for t, idxs in enumerate(self._evalpts_idx_arr[1]):
                     if not due_status[1][t]:
-                        for idx in idxs:
-                            erasure_flags[idx] = 0
+                        erasure_flags[idxs] = 0
 
             if (
                 (
@@ -1143,11 +1069,11 @@ class TamoBargIterativeEEDecoder(Decoder):
                     or (self._dynamic_erasure_start and erasures_activated)
                 )
                 and work_stalled
-                and erasure_flags == prev_erasures
+                and erasure_flags.tobytes() == prev_erasures
             ):
                 break
 
-        return (work, self._era_ambient_space(erasure_flags)), num_itr, converged
+        return (work, self._era_ambient_space(erasure_flags.tolist())), num_itr, converged
 
     def decode_to_code(self, r: Any) -> tuple[tuple[Any, Any], int]:
         """Iteratively decode errors and DUE-marked erasures without mutating ``r``.
@@ -1168,26 +1094,26 @@ class TamoBargIterativeEEDecoder(Decoder):
 
 
 class TamoBargGlobalDecoder(Decoder):
-    """Global GRS hard-decision decoder using the code's polynomial design distance."""
+    """Global RS hard-decision decoder using the code's polynomial design distance."""
 
     def __init__(self, code: TamoBargCodeTwoSets) -> None:
-        """Initialize the ambient global GRS code, Gao decoder, and parity-check matrix."""
+        """Initialize the ambient global RS codec and parity-check matrix."""
         super().__init__(code, code.ambient_space(), "VectorEncoder")
         self._F = code.base_field()
         self._ambient_space = code.ambient_space()
-        self._global_grs = GeneralizedReedSolomonCode(
+        self._global_rs = RSCodec(
+            self._F,
             code.evaluation_points(),
             int(code.length()) - code.design_distance() + 1,
         )
-        self._global_decoder = self._global_grs.decoder("Gao")
-        self._global_pcm = _safe_parity_check_matrix(self._global_grs)
+        self._global_pcm = self._global_rs.parity_check_matrix()
 
     def _repr_(self) -> str:
         """Return string representation of the global decoder."""
         return f"Global Decoder for {self.code()}"
 
     def decode_to_code(self, r: Any) -> Any:
-        """Decode ``r`` via the global enveloping GRS code without mutating ``r``.
+        """Decode ``r`` via the global enveloping RS code without mutating ``r``.
 
         Args:
             r: Received word in ``GF(q)^n``.
@@ -1196,31 +1122,29 @@ class TamoBargGlobalDecoder(Decoder):
             Decoded codeword vector in ``GF(q)^n``.
         """
         work = copy(self._ambient_space(r))
-        if (self._global_pcm * work).is_zero():
+        if self._global_rs.has_zero_syndrome(work):
             return work
-        return self._global_decoder.decode_to_code(work)
+        return self._global_rs.decode_errors(work)
 
 
 class TamoBargGlobalEEDecoder(Decoder):
-    """Global GRS erasure-and-error decoder over ``GF(q)^n x GF(2)^n``."""
+    """Global RS erasure-and-error decoder over ``GF(q)^n x GF(2)^n``."""
 
     def __init__(self, code: TamoBargCodeTwoSets) -> None:
-        """Initialize the Cartesian input space and global GRS ErrorErasure decoder."""
+        """Initialize the Cartesian input space and global RS error-and-erasure codec."""
         era_space = VectorSpace(GF(2), int(code.length()))
         input_space = cartesian_product([code.ambient_space(), era_space])
         super().__init__(code, input_space, "VectorEncoder")
         self._F = code.base_field()
         self._ambient_space = code.ambient_space()
         self._era_space = era_space
-        self._poly_ring = PolynomialRing(self._F, "x", implementation="generic")
-        self._global_grs = GeneralizedReedSolomonCode(
+        self._global_rs = RSCodec(
+            self._F,
             code.evaluation_points(),
             int(code.length()) - code.design_distance() + 1,
         )
-        self._global_decoder = self._global_grs.decoder("ErrorErasure")
-        self._global_gao_decoder = self._global_grs.decoder("Gao")
-        self._global_pcm = _safe_parity_check_matrix(self._global_grs)
-        self._d_glob: int = int(self._global_grs.minimum_distance())
+        self._global_pcm = self._global_rs.parity_check_matrix()
+        self._d_glob: int = int(self._global_rs.minimum_distance())
 
     def _repr_(self) -> str:
         """Return string representation of the global erasure-and-error decoder."""
@@ -1246,20 +1170,12 @@ class TamoBargGlobalEEDecoder(Decoder):
         era_wt = int(era_vec.hamming_weight())
 
         if era_wt == 0:
-            if (self._global_pcm * work).is_zero():
+            if self._global_rs.has_zero_syndrome(work):
                 return work
-            return self._global_gao_decoder.decode_to_code(work)
+            return self._global_rs.decode_errors(work)
         if era_wt >= self._d_glob:
             raise DecodingError("Too many erasures for global decoder")
-        if era_wt == self._d_glob - 1:
-            corr_list = interpolate_erasures(
-                self._poly_ring,
-                self.code().evaluation_points(),
-                list(work),
-                list(era_vec),
-            )
-            return self._ambient_space(corr_list)
-        return self._global_decoder.decode_to_code((work, era_vec))
+        return self._global_rs.decode_errors_erasures(work, era_vec)
 
 
 class TamoBargTwoStepDecoder(Decoder):

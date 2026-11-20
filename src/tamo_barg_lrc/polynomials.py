@@ -3,10 +3,7 @@
 from collections.abc import Sequence
 from typing import Any, Literal
 
-import sage.rings.polynomial.laurent_polynomial_ring  # noqa: F401
-from sage.matrix.constructor import matrix
-from sage.misc.misc_c import prod
-
+from tamo_barg_lrc._ff import matrix, prod
 from tamo_barg_lrc.subgroups import field_element_to_int
 
 __all__ = [
@@ -283,10 +280,10 @@ def intersect_encoding_bases(
 
     if len(basis_a) + len(basis_b) > num_cols:
         # Dual orthogonal method: U cap V = (U^perp + V^perp)^perp.
-        # right_kernel_matrix() returns rows already in RREF (reversed column order).
+        # Put the intersection basis in RREF (reversed column order) for minimal degrees.
         h_a = mat_a_rev.right_kernel_matrix()
         h_b = mat_b_rev.right_kernel_matrix()
-        rref_rev = h_a.stack(h_b).right_kernel_matrix()
+        rref_rev = h_a.stack(h_b).right_kernel_matrix().echelon_form()
     else:
         ker = mat_a_rev.stack(-mat_b_rev).left_kernel_matrix()
         if ker.nrows() == 0:

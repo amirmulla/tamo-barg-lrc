@@ -5,9 +5,6 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import pytest
-from sage.modules.free_module import VectorSpace
-from sage.modules.free_module_element import vector
-from sage.rings.finite_rings.finite_field_constructor import GF
 from simulation import (
     error_weight,
     expander_sim,
@@ -18,7 +15,7 @@ from simulation import (
     weight_distribution,
 )
 
-from tamo_barg_lrc import TamoBargCodeTwoSets
+from tamo_barg_lrc import GF, TamoBargCodeTwoSets, VectorSpace, vector
 from tamo_barg_lrc.simulation import (
     VALID_DECODER_NAMES,
     DecodeOutcome,

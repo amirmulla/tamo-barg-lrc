@@ -5,9 +5,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import networkx as nx
 import pytest
-from sage.rings.finite_rings.finite_field_constructor import GF
 
-from tamo_barg_lrc import TamoBargCodeTwoSets
+from tamo_barg_lrc import GF, TamoBargCodeTwoSets
 from tamo_barg_lrc.expander import (
     compute_expansion_metrics,
     create_bipartite_coset_graph,

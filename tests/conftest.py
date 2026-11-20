@@ -6,9 +6,8 @@ from pathlib import Path
 
 import matplotlib
 import pytest
-from sage.misc.randstate import set_random_seed
 
-import tamo_barg_lrc  # noqa: F401 - initializes SageMath runtime before test imports
+from tamo_barg_lrc._ff import set_random_seed
 
 matplotlib.use("Agg")
 
@@ -19,6 +18,6 @@ if str(REPO_ROOT) not in sys.path:
 
 @pytest.fixture(autouse=True)
 def seed_rngs() -> None:
-    """Seed both Python and SageMath RNGs before every test for determinism."""
+    """Seed both Python and finite-field RNGs before every test for determinism."""
     random.seed(42)
     set_random_seed(42)

@@ -1,16 +1,22 @@
-"""Optimal Locally Recoverable Codes (single-set and two-set Tamo-Barg codes) in SageMath."""
+"""Optimal Locally Recoverable Codes (single-set and two-set Tamo-Barg codes)."""
 
 import importlib
 from typing import TYPE_CHECKING, Any
 
-# Initialize SageMath's Cython coercion and category framework once on package import.
-# Supports both monolithic SageMath (`sage -python`) and modular `passagemath` wheels.
-try:
-    import sage.all  # noqa: F401
-except ModuleNotFoundError:
-    import sage.all__sagemath_modules  # noqa: F401
-
 if TYPE_CHECKING:
+    from tamo_barg_lrc._ff import (
+        GF,
+        HAS_CYTHON,
+        DecodingError,
+        MatrixSpace,
+        PolynomialRing,
+        RSCodec,
+        VectorSpace,
+        matrix,
+        set_random_seed,
+        vector,
+        zero_vector,
+    )
     from tamo_barg_lrc.expander import (
         compute_expansion_metrics,
         create_bipartite_coset_graph,
@@ -49,6 +55,17 @@ if TYPE_CHECKING:
 __version__ = "0.2.0"
 
 __all__ = [
+    "GF",
+    "VectorSpace",
+    "MatrixSpace",
+    "PolynomialRing",
+    "DecodingError",
+    "vector",
+    "zero_vector",
+    "matrix",
+    "RSCodec",
+    "HAS_CYTHON",
+    "set_random_seed",
     "TamoBargCode",
     "TamoBargVectorEncoder",
     "TamoBargErasureDecoder",
@@ -78,6 +95,18 @@ __all__ = [
 ]
 
 _EXPORT_TO_MODULE: dict[str, str] = {
+    # tamo_barg_lrc._ff
+    "GF": "tamo_barg_lrc._ff",
+    "VectorSpace": "tamo_barg_lrc._ff",
+    "MatrixSpace": "tamo_barg_lrc._ff",
+    "PolynomialRing": "tamo_barg_lrc._ff",
+    "DecodingError": "tamo_barg_lrc._ff",
+    "vector": "tamo_barg_lrc._ff",
+    "zero_vector": "tamo_barg_lrc._ff",
+    "matrix": "tamo_barg_lrc._ff",
+    "RSCodec": "tamo_barg_lrc._ff",
+    "HAS_CYTHON": "tamo_barg_lrc._ff",
+    "set_random_seed": "tamo_barg_lrc._ff",
     # tamo_barg_lrc.tamo_barg
     "TamoBargCode": "tamo_barg_lrc.tamo_barg",
     "TamoBargVectorEncoder": "tamo_barg_lrc.tamo_barg",

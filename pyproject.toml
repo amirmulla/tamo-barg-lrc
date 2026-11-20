@@ -1,15 +1,16 @@
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=64", "wheel", "numpy>=1.24"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "tamo-barg-lrc"
-version = "0.2.1"
-description = "Optimal Locally Recoverable Codes (single-set and two-set Tamo-Barg codes) in SageMath"
+version = "0.3.0"
+description = "Optimal Locally Recoverable Codes (single-set and two-set Tamo-Barg codes) in pure Python/NumPy with optional Cython acceleration"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = [
+    "numpy>=1.24",
     "networkx>=2.8",
     "matplotlib>=3.6",
 ]
@@ -26,6 +27,9 @@ sage = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"tamo_barg_lrc._ff" = ["*.h", "*.pyx"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

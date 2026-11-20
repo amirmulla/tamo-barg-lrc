@@ -1,18 +1,27 @@
 """Unit, property, and bug-regression tests for single-set TamoBargCode."""
 
 import pytest
-from sage.coding.decoder import DecodingError
-from sage.modules.free_module import VectorSpace
-from sage.modules.free_module_element import vector
-from sage.rings.finite_rings.finite_field_constructor import GF
-from sage.rings.rational_field import QQ
 
 from tamo_barg_lrc import (
+    GF,
+    DecodingError,
     TamoBargCode,
     TamoBargErasureDecoder,
     TamoBargErrorDecoder,
     TamoBargVectorEncoder,
+    VectorSpace,
+    vector,
 )
+
+
+class _InfiniteField:
+    """Lightweight non-finite-field stub replacing SageMath's QQ in validation tests."""
+
+    def is_finite(self) -> bool:
+        return False
+
+    def is_field(self) -> bool:
+        return True
 
 
 def test_single_set_codes_parameters_and_properties() -> None:
@@ -215,7 +224,7 @@ def test_regression_b11_upfront_parameter_validation() -> None:
 
     # Invalid field, locality, local_minimum_distance, bool parameter, and sub_group_type.
     with pytest.raises(ValueError, match="finite field"):
-        TamoBargCode(QQ, 12, 6, 3, 2)
+        TamoBargCode(_InfiniteField(), 12, 6, 3, 2)
     with pytest.raises(ValueError, match="locality"):
         TamoBargCode(f13, 12, 6, 0, 2)
     with pytest.raises(ValueError, match="local_minimum_distance"):

@@ -14,12 +14,17 @@ from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
-from sage.coding.decoder import DecodingError
-from sage.misc.randstate import set_random_seed
-from sage.modules.free_module import VectorSpace
-from sage.modules.free_module_element import zero_vector
-from sage.rings.finite_rings.finite_field_constructor import GF
 
+from tamo_barg_lrc._ff import (
+    GF,
+    FFMatrix,
+    FiniteField,
+    VectorSpace,
+    random_error_vector,
+    set_random_seed,
+    zero_vector,
+)
+from tamo_barg_lrc.coding_base import DecodingError
 from tamo_barg_lrc.expander import compute_expansion_metrics, save_bipartite_graph_plot
 from tamo_barg_lrc.simulation import VALID_DECODER_NAMES, add_common_simulation_args
 from tamo_barg_lrc.subgroups import SubgroupType, find_additive_subgroups
@@ -43,11 +48,10 @@ __all__ = [
     "write_code_metadata_csv",
 ]
 
-# Module-level caches to avoid redundant per-trial Sage allocations and failed imports.
+# Module-level caches to avoid redundant per-trial finite-field allocations.
 _ZERO_GF2_CACHE: dict[int, Any] = {}
 _ZERO_VEC_CACHE: dict[tuple[Any, int], Any] = {}
 _NONZERO_ELEMS_CACHE: dict[Any, tuple[Any, ...]] = {}
-_HAS_LIBGAP: bool | None = None
 
 # Worker-process shared state populated before fork() or via spawn initializer.
 _WORKER_STATE: dict[str, Any] = {}
@@ -84,7 +88,7 @@ def build_decoder(
             starts for erasure-and-error iterative/two-step decoders.
 
     Returns:
-        Configured SageMath ``Decoder`` instance.
+        Configured ``Decoder`` instance.
 
     Raises:
         ValueError: If ``decoder_name`` is not a recognized two-set decoder name.
@@ -165,7 +169,7 @@ def invoke_decoder(
 
 
 def seed_simulation_rngs(seed: int | None) -> None:
-    """Seed both Python and SageMath pseudo-random number generators if ``seed`` is set.
+    """Seed both Python and finite-field pseudo-random number generators if ``seed`` is set.
 
     Args:
         seed: Optional integer seed; if ``None``, RNG state is left unchanged.
@@ -269,6 +273,10 @@ def sample_fixed_weight_error(
             f"Requested error weight {weight} outside valid range 0 .. {len(positions)}"
         )
 
+    if isinstance(field, FiniteField):
+        chosen_positions = random.sample(positions, weight) if weight > 0 else ()
+        return random_error_vector(length, field, chosen_positions)
+
     vec_key = (field, length)
     zero_template = _ZERO_VEC_CACHE.get(vec_key)
     if zero_template is None:
@@ -292,7 +300,7 @@ def sample_fixed_weight_error(
             err[pos] = val
     else:
         for pos in chosen_positions:
-            err[pos] = field._random_nonzero_element()
+            err[pos] = field.random_nonzero()
     return err
 
 
@@ -491,36 +499,46 @@ def _compute_weight_distribution_gf2m(code: TamoBargCodeTwoSets) -> list[int]:
         return counts.tolist()
 
     dtype = np.uint8 if q <= 256 else np.uint16
-    to_int = (lambda x: x.to_integer()) if hasattr(field.one(), "to_integer") else int
-
-    # Build GF(2^m) log/antilog lookup tables in O(q).
-    gen = field.multiplicative_generator()
-    exp_tbl = np.empty(2 * (q - 1), dtype=dtype)
-    log_tbl = np.full(q, -1, dtype=np.int32)
-    cur = field.one()
-    for exp_idx in range(q - 1):
-        val_int = to_int(cur)
-        exp_tbl[exp_idx] = val_int
-        exp_tbl[exp_idx + q - 1] = val_int
-        log_tbl[val_int] = exp_idx
-        cur *= gen
 
     # Extract non-pivot columns of the RREF basis into a compact integer array (rank, m_rem).
-    mat_int = np.empty((rank, m_rem), dtype=dtype)
-    for r_idx in range(rank):
-        row = echelon_mat.row(r_idx)
-        for c_idx, col in enumerate(non_pivots):
-            mat_int[r_idx, c_idx] = to_int(row[col])
+    if isinstance(echelon_mat, FFMatrix):
+        mat_int = np.ascontiguousarray(echelon_mat._arr[:rank, non_pivots], dtype=dtype)
+    else:
+        to_int = (lambda x: x.to_integer()) if hasattr(field.one(), "to_integer") else int
+        mat_int = np.empty((rank, m_rem), dtype=dtype)
+        for r_idx in range(rank):
+            row = echelon_mat.row(r_idx)
+            for c_idx, col in enumerate(non_pivots):
+                mat_int[r_idx, c_idx] = to_int(row[col])
 
     # Precompute all (rank, q, m_rem) scalar-multiplied basis rows via log/antilog addition.
     # Index 0 -> 0; index s in 1..q-1 -> gen^(s - 1) (so s = 1 corresponds to 1).
     tables = np.zeros((rank, q, m_rem), dtype=dtype)
-    mat_logs = log_tbl[mat_int]
-    nz_mask = mat_logs >= 0
     s_exps = np.arange(q - 1, dtype=np.int32)[None, :, None]
-    sum_logs = mat_logs[:, None, :] + s_exps
-    prod = np.where(nz_mask[:, None, :], exp_tbl[np.maximum(sum_logs, 0)], 0)
-    tables[:, 1:, :] = prod
+    if (
+        isinstance(field, FiniteField)
+        and field.exp_table is not None
+        and field.log_table is not None
+    ):
+        sum_logs = field.log_table[mat_int][:, None, :] + s_exps
+        tables[:, 1:, :] = field.exp_table[sum_logs].astype(dtype, copy=False)
+    else:
+        to_int = (lambda x: x.to_integer()) if hasattr(field.one(), "to_integer") else int
+        gen = field.multiplicative_generator()
+        exp_tbl = np.empty(2 * (q - 1), dtype=dtype)
+        log_tbl = np.full(q, -1, dtype=np.int32)
+        cur = field.one()
+        for exp_idx in range(q - 1):
+            val_int = to_int(cur)
+            exp_tbl[exp_idx] = val_int
+            exp_tbl[exp_idx + q - 1] = val_int
+            log_tbl[val_int] = exp_idx
+            cur *= gen
+        mat_logs = log_tbl[mat_int]
+        nz_mask = mat_logs >= 0
+        sum_logs = mat_logs[:, None, :] + s_exps
+        prod = np.where(nz_mask[:, None, :], exp_tbl[np.maximum(sum_logs, 0)], 0)
+        tables[:, 1:, :] = prod
 
     scalar_mult = q - 1
     batch_dims = 2 if q <= 64 else 1
@@ -629,9 +647,9 @@ def compute_code_weight_distribution(code: TamoBargCodeTwoSets) -> list[int]:
 
     For characteristic-2 fields with ``q <= 65536``, uses a vectorized NumPy
     log/antilog table and batched bitwise-XOR projective enumeration. For odd
-    prime-power or larger fields, uses SageMath's native ``code.weight_distribution()``
-    when GAP/libgap is available and otherwise falls back to projective (monic)
-    message-space enumeration achieving a ``(q - 1)x`` speedup over naive enumeration.
+    prime-power or larger fields, delegates to ``code.weight_distribution()``
+    with a projective (monic) ``VectorSpace`` fallback achieving a ``(q - 1)x``
+    speedup over naive enumeration.
 
     Args:
         code: Two-set Tamo-Barg code instance.
@@ -640,20 +658,15 @@ def compute_code_weight_distribution(code: TamoBargCodeTwoSets) -> list[int]:
         List of length ``n + 1`` where entry ``w`` is the number of codewords of
         Hamming weight ``w``.
     """
-    global _HAS_LIBGAP
-
     field = code.base_field()
     q = int(field.cardinality())
     if int(field.characteristic()) == 2 and q <= 65536:
         return _compute_weight_distribution_gf2m(code)
 
-    if _HAS_LIBGAP is not False:
-        try:
-            result = [int(val) for val in code.weight_distribution()]
-            _HAS_LIBGAP = True
-            return result
-        except (ImportError, ModuleNotFoundError, NotImplementedError):
-            _HAS_LIBGAP = False
+    try:
+        return [int(val) for val in code.weight_distribution()]
+    except (AttributeError, NotImplementedError):
+        pass
 
     length = int(code.length())
     counts = [0] * (length + 1)

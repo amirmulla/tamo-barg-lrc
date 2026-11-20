@@ -1,10 +1,8 @@
 """Unit, property, and regression tests for tamo_barg_lrc.subgroups and polynomials."""
 
 import pytest
-from sage.rings.finite_rings.finite_field_constructor import GF
-from sage.rings.integer_ring import ZZ
-from sage.rings.polynomial.polynomial_ring_constructor import PolynomialRing
 
+from tamo_barg_lrc import GF, PolynomialRing
 from tamo_barg_lrc.polynomials import (
     build_algebra_basis,
     build_annihilator_polynomial,
@@ -26,6 +24,16 @@ from tamo_barg_lrc.subgroups import (
     shift_additive_subgroup,
     sort_field_elements,
 )
+
+
+class _InfiniteRing:
+    """Lightweight non-finite-field stub replacing SageMath's ZZ in validation tests."""
+
+    def is_finite(self) -> bool:
+        return False
+
+    def is_field(self) -> bool:
+        return False
 
 
 def test_field_element_to_int_and_sorting() -> None:
@@ -74,7 +82,7 @@ def test_find_subspaces_and_validation() -> None:
     assert len(find_subspaces(2, 4, f16)) == 35
 
     with pytest.raises(ValueError, match="finite field"):
-        find_subspaces(1, 2, ZZ)
+        find_subspaces(1, 2, _InfiniteRing())
     with pytest.raises(ValueError, match="0 <= dim <="):
         find_subspaces(5, 4, f16)
     with pytest.raises(ValueError, match="0 <= dim <="):

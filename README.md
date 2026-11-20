@@ -1,36 +1,36 @@
-# tamo_barg_lrc
+# tamo-barg-lrc
 
-**Optimal Locally Recoverable Codes (LRCs)** in SageMath, implementing single-locality and two-set (multi-locality) Tamo–Barg algebraic constructions over finite fields $\mathbb{F}_q$, bipartite coset expander analysis, and iterative, global, and two-step error/erasure decoders.
+**Optimal Locally Recoverable Codes (LRCs)** in pure Python, NumPy, and an optional C99/Cython accelerator (100% MIT, zero SageMath required), implementing single-locality and two-set (multi-locality) Tamo–Barg algebraic constructions over finite fields $\mathbb{F}_q$, bipartite coset expander analysis, and iterative, global, and two-step error/erasure decoders.
+
+> **SageMath version:** The Phase 0/1 optimized SageMath implementation is preserved in [`amirmulla/sage-lrc`](https://github.com/amirmulla/sage-lrc).
 
 ---
 
 ## Overview
 
-`tamo_barg_lrc` provides coding-theoretic constructions and decoding algorithms built on SageMath's finite-field, polynomial, and linear-code frameworks:
+`tamo_barg_lrc` provides coding-theoretic constructions and decoding algorithms powered by a self-contained MIT finite-field and Reed–Solomon engine (`tamo_barg_lrc._ff`):
 
+- **Self-Contained Finite-Field & RS Engine (`tamo_barg_lrc._ff`)**: Supports $\mathbb{F}_2$, $\mathbb{F}_{2^m}$, $\mathbb{F}_p$, and odd $\mathbb{F}_{p^m}$ with Conway polynomials, dense linear algebra (RREF, kernels), polynomial arithmetic, and a unified Sugiyama + Chien + Forney Reed–Solomon error-and-erasure decoder accelerated by a portable C99/Cython extension (`_ff_cy`, with automatic Pure-NumPy fallback).
 - **Single-Set Tamo–Barg Codes (`TamoBargCode`)**: Optimal $(n, k, r, \delta)$ LRCs constructed from additive or multiplicative subgroup coset partitions of $\mathbb{F}_q$ using annihilator ("good") polynomials, achieving the Singleton-like minimum distance bound
   $$d \ge n - k + 1 - \left(\left\lceil \frac{k}{r} \right\rceil - 1\right)(\delta - 1).$$
 - **Two-Set Tamo–Barg Codes (`TamoBargCodeTwoSets`)**: Multi-locality LRCs defined over two transverse coset partitions (`["add", "add"]`, `["mult", "mult"]`, `["add", "mult"]`, or `["mult", "add"]`) via degree-minimizing encoding-basis intersection.
-- **Bipartite Coset Expander Analysis (`tamo_barg_lrc.expander`)**: Construction of the bipartite coset intersection graph, spectral gap and algebraic connectivity metrics, trapping/stopping subgraph extraction, and headless visualization.
+- **Bipartite Coset Expander Analysis (`tamo_barg_lrc.expander`)**: Construction of the bipartite coset intersection graph, spectral gap and algebraic connectivity metrics, trapping/stopping subgraph extraction, and headless `LineCollection` visualization.
 - **Local, Iterative, Global & Two-Step Decoders**:
-  - Single-set local Lagrange erasure recovery (`ErasureDecoder`) and syndrome-gated local Reed–Solomon Berlekamp–Welch decoding (`ErrorDecoder`).
-  - Two-set iterative hard-decision (`IterativeDecoder`), iterative erasure-error with DUE marking (`IterativeErasureErrorDecoder`), global GRS (`GlobalDecoder`, `GlobalErasureErrorDecoder`), and hybrid iterative + global two-step decoders (`TwoStepsDecoder`, `TwoStepsErasureErrorDecoder`).
+  - Single-set local erasure recovery (`ErasureDecoder`) and syndrome-gated shared canonical local Reed–Solomon decoding (`ErrorDecoder`).
+  - Two-set iterative hard-decision (`IterativeDecoder`), iterative erasure-error with DUE marking (`IterativeErasureErrorDecoder`), global RS (`GlobalDecoder`, `GlobalErasureErrorDecoder`), and hybrid iterative + global two-step decoders (`TwoStepsDecoder`, `TwoStepsErasureErrorDecoder`).
 
 ---
 
 ## Requirements & Installation
 
-- **Python**: `>= 3.10`
-- **SageMath**: Either a system SageMath installation (`sage -python`, SageMath 9.8+) or modular [`passagemath`](https://github.com/passagemath/passagemath) wheels (`passagemath-modules`, `passagemath-flint`, `passagemath-pari`, `passagemath-groups`) in a virtual environment.
-- **Python packages**: `networkx >= 2.8`, `matplotlib >= 3.6` (plus `pytest >= 7.2` and `ruff >= 0.4` for development).
-
-Install in editable mode inside your SageMath Python environment:
+- **Python**: `>= 3.10` (Linux, macOS, Windows)
+- **Core dependencies**: `numpy >= 1.24`, `networkx >= 2.8`, `matplotlib >= 3.6`
+- **Optional build acceleration**: `cython` + a C99 compiler (automatically compiles `_ff_cy`; falls back cleanly to Pure NumPy if unavailable, or when `TAMO_BARG_NO_CYTHON=1`)
+- **Optional `[sage]` extra**: `passagemath-modules[m4rie]` + `passagemath-brial` for running the optional SageMath differential oracle tests (`tests/test_sage_differential.py`)
 
 ```bash
-sage -python -m pip install -e ".[dev]" --no-build-isolation
+pip install -e ".[dev]"
 ```
-
-*(If using a virtual environment with modular `passagemath` already installed, run `python -m pip install -e ".[dev]" --no-build-isolation`.)*
 
 ---
 
@@ -41,11 +41,7 @@ sage -python -m pip install -e ".[dev]" --no-build-isolation
 Construct an optimal $[16, 6, r=2]$ LRC with local minimum distance $\delta = 3$ over $\mathbb{F}_{16}$ (each local group of size $r + \delta - 1 = 4$ forms a $[4, 2, 3]$ Reed–Solomon code):
 
 ```python
-from sage.modules.free_module import VectorSpace
-from sage.modules.free_module_element import vector
-from sage.rings.finite_rings.finite_field_constructor import GF
-
-from tamo_barg_lrc import TamoBargCode
+from tamo_barg_lrc import GF, TamoBargCode, VectorSpace, vector
 
 F = GF(16, "a")
 code = TamoBargCode(
@@ -80,11 +76,7 @@ assert recovered_error == codeword
 Construct two-set Tamo–Barg codes using either disjoint additive subgroups (`["add", "add"]`) or mixed additive/multiplicative coset partitions (`["add", "mult"]`), and decode using the two-step decoders:
 
 ```python
-from sage.modules.free_module import VectorSpace
-from sage.modules.free_module_element import vector
-from sage.rings.finite_rings.finite_field_constructor import GF
-
-from tamo_barg_lrc import TamoBargCodeTwoSets, compute_expansion_metrics
+from tamo_barg_lrc import GF, TamoBargCodeTwoSets, VectorSpace, compute_expansion_metrics, vector
 
 F = GF(64, "a")
 
@@ -135,10 +127,10 @@ assert decoded_ee == codeword
 
 | Code Class | Registered Decoder Key | `decode_to_code` Input | Return Signature |
 | :--- | :--- | :--- | :--- |
-| `TamoBargCode` | `"ErasureDecoder"` | `(word, erasure_vec)` | `Vector` |
-| `TamoBargCode` | `"ErrorDecoder"` | `r` | `Vector` |
-| `TamoBargCodeTwoSets` | `"GlobalDecoder"` | `r` | `Vector` |
-| `TamoBargCodeTwoSets` | `"GlobalErasureErrorDecoder"` | `(word, erasure_vec)` | `Vector` |
+| `TamoBargCode` | `"ErasureDecoder"` | `(word, erasure_vec)` | `FFVector` |
+| `TamoBargCode` | `"ErrorDecoder"` | `r` | `FFVector` |
+| `TamoBargCodeTwoSets` | `"GlobalDecoder"` | `r` | `FFVector` |
+| `TamoBargCodeTwoSets` | `"GlobalErasureErrorDecoder"` | `(word, erasure_vec)` | `FFVector` |
 | `TamoBargCodeTwoSets` | `"IterativeDecoder"` | `r` | `(codeword, num_itr)` |
 | `TamoBargCodeTwoSets` | `"IterativeErasureErrorDecoder"` | `r` | `((codeword, erasure_vec), num_itr)` |
 | `TamoBargCodeTwoSets` | `"TwoStepsDecoder"` | `r` | `(codeword, num_itr)` |
@@ -150,44 +142,24 @@ assert decoded_ee == codeword
 
 ### Test Suite & Linting
 
-Run the deterministic `pytest` suite:
-
 ```bash
-sage -python -m pytest -v
-```
-
-Check code formatting and lint rules with `ruff`:
-
-```bash
-ruff check src/ simulation/ tests/
-ruff format --check src/ simulation/ tests/
+pytest -v
+ruff check src/ simulation/ tests/ setup.py
+ruff format --check src/ simulation/ tests/ setup.py
 ```
 
 ### CLI Simulation Scripts
 
-All scripts in `simulation/` accept `--help` and configurable CLI flags (`--q`, `--n`, `--k`, `--r`, `--local-min-dist`, `--subgroup-types`, `--decoder`, `--sim-itr`, `--max-err`, `--output-dir`, `--seed`, etc.):
+All scripts in `simulation/` accept `--help` and configurable CLI flags (`--q`, `--n`, `--k`, `--r`, `--local-min-dist`, `--subgroup-types`, `--decoder`, `--sim-itr`, `--max-err`, `--workers`, `--no-plot`, `--stop-after-zero-runs`, `--output-dir`, `--seed`, etc.):
 
 ```bash
-# Residual error-weight distribution across injected error weights
-sage -python simulation/error_weight.py --sim-itr 100 --max-err 15 --output-dir ./results
-
-# Two-step (iterative + global) decoding success probability simulation
-sage -python simulation/two_step_decoding_sim.py --sim-itr 100 --max-err 15 --output-dir ./results
-
-# Bipartite expander / stopping-set error simulation
-sage -python simulation/expander_sim.py --q 64 --n 64 --sim-itr 100 --max-err 15 --output-dir ./results
-
-# Global GRS decoding threshold simulation
-sage -python simulation/global_decoding_sim.py --q 64 --n 64 --sim-itr 100 --max-err 15 --output-dir ./results
-
-# Pure iterative decoding success probability simulation
-sage -python simulation/iterative_decoding_sim.py --q 64 --n 64 --r 2 5 --local-min-dist 3 3 --sim-itr 100 --max-err 10 --output-dir ./results
-
-# Exact codeword Hamming weight distribution analysis
-sage -python simulation/weight_distribution.py --q 64 --n 64 --k 3 --output-dir ./results
-
-# Post-process residual error CSV outputs into global decoding success rates
-sage -python simulation/process_results.py --help
+python simulation/error_weight.py --sim-itr 100 --max-err 15 --workers 4 --no-plot --output-dir ./results
+python simulation/two_step_decoding_sim.py --sim-itr 100 --max-err 15 --workers 4 --output-dir ./results
+python simulation/expander_sim.py --q 64 --n 64 --sim-itr 100 --max-err 15 --output-dir ./results
+python simulation/global_decoding_sim.py --q 64 --n 64 --sim-itr 100 --max-err 15 --output-dir ./results
+python simulation/iterative_decoding_sim.py --q 64 --n 64 --r 2 5 --local-min-dist 3 3 --sim-itr 100 --max-err 10 --output-dir ./results
+python simulation/weight_distribution.py --q 64 --n 64 --k 3 --output-dir ./results
+python simulation/process_results.py --help
 ```
 
 ---
@@ -196,15 +168,23 @@ sage -python simulation/process_results.py --help
 
 ```text
 src/tamo_barg_lrc/
-├── __init__.py             # SageMath initialization & PEP 562 lazy public API exports
+├── __init__.py             # PEP 562 lazy public API exports (zero SageMath dependency)
+├── _ff/
+│   ├── __init__.py         # Finite-field & RSCodec public exports
+│   ├── conway.py           # Conway polynomials (GF(2^1..2^16) & odd GF(p^m))
+│   ├── protocol.py         # Typed finite-field / RSCodec protocols & DecodingError
+│   ├── numpy_backend.py    # Pure-NumPy + LUT GF(p^m), matrices, polynomials & RSCodec
+│   ├── _ff_core.h          # Portable C99 GF(2^m) LUT, RREF & Sugiyama-Chien-Forney RS core
+│   └── _ff_cy.pyx          # Thin Cython accelerator (optional; automatic Pure-NumPy fallback)
+├── coding_base.py          # Lightweight MIT AbstractLinearCode, Encoder & Decoder base classes
 ├── subgroups.py            # Finite-field additive/multiplicative subgroups & coset partitions
 ├── polynomials.py          # Annihilator ("good") polynomials, encoding bases & interpolation
 ├── expander.py             # Bipartite coset graphs, expansion metrics & headless plotting
 ├── tamo_barg.py            # Single-set TamoBargCode, encoder & local error/erasure decoders
 ├── tamo_barg_two_sets.py   # Two-set TamoBargCodeTwoSets, encoder & iterative/global/two-step decoders
 └── simulation/
-    ├── __init__.py         # Simulation subpackage exports
-    ├── runner.py           # Unified decoder dispatch, CSV metadata writers & Monte Carlo runners
+    ├── __init__.py         # Lazy simulation subpackage exports
+    ├── runner.py           # Unified decoder dispatch, CSV metadata writers & parallel Monte Carlo runners
     └── postprocess.py      # Residual error CSV post-processing utilities
 ```
 

@@ -3,14 +3,14 @@
 from typing import Any
 
 import pytest
-from sage.coding.decoder import DecodingError
-from sage.modules.free_module import VectorSpace
-from sage.modules.free_module_element import vector
-from sage.rings.finite_rings.finite_field_constructor import GF
 
 from tamo_barg_lrc import (
+    GF,
+    DecodingError,
     TamoBargCodeTwoSets,
+    VectorSpace,
     find_additive_subgroups,
+    vector,
 )
 
 

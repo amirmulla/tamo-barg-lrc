@@ -4,9 +4,7 @@ from collections.abc import Iterable, Sequence
 from itertools import combinations
 from typing import Any, Literal
 
-from sage.arith.misc import divisors
-from sage.modules.free_module import VectorSpace
-from sage.rings.finite_rings.finite_field_constructor import GF
+from tamo_barg_lrc._ff import GF, VectorSpace, divisors
 
 SubgroupType = Literal["add", "mult"]
 
